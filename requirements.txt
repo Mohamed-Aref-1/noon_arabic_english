@@ -1,0 +1,11 @@
+# Noon Scraper V2 - Requirements
+# Install: pip install -r requirements.txt
+
+# HTTP client with browser impersonation (anti-bot bypass)
+curl_cffi>=0.9.0
+# Data manipulation and CSV export
+pandas>=2.0.0
+
+# Environment variable loading
+python-dotenv>=1.0.0
+

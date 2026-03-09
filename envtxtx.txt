@@ -1,0 +1,68 @@
+# =============================================================================
+# NOON SCRAPER - ENVIRONMENT CONFIGURATION
+# =============================================================================
+# Update these values when cookies expire
+
+# Visitor IDs
+VISITOR_ID=8b76a0b9-1549-483d-b87b-2982d89f75a1
+VISITOR_ID_ALT=18329ffc-072d-4f43-b878-1674a68b278c
+
+# Locale and Region
+LOCALE=en-ae
+REGION=ecom
+COUNTRY=ae
+
+# Location Headers (Dubai area)
+LAT=251998495
+LNG=552715985
+ZONE_CODE=AE_DXB-S14
+ROCKET_ZONE_CODE=W00068765A
+
+# =============================================================================
+# SCRAPER MODE
+# =============================================================================
+# Options:
+#   BOTH           - Run category scraper + products scraper together (default)
+#   CATEGORY_ONLY  - Run only category scraper (generates category CSV files)
+#   PRODUCTS_ONLY  - Run only products scraper (processes existing category CSV files)
+SCRAPER_MODE=BOTH
+
+# =============================================================================
+# SCRAPER SETTINGS
+# =============================================================================
+
+# Batch size for writing to CSV (memory management)
+BATCH_SIZE=500
+
+# Max queue size for product scraper (prevents OOM for large categories)
+# When queue is full, category scraper waits for product scraper to catch up
+MAX_QUEUE_SIZE=100000
+
+# Delay between requests (min,max in seconds)
+REQUEST_DELAY_MIN=2
+REQUEST_DELAY_MAX=4
+
+# Request timeout in seconds
+REQUEST_TIMEOUT=20
+
+# Chrome version to impersonate
+CHROME_IMPERSONATE=chrome110
+CHROME_IMPERSONATE_DETAIL=chrome120
+
+# =============================================================================
+# OUTPUT FOLDERS
+# =============================================================================
+
+# Category files (scraped from category listing pages)
+CATEGORY_RAW_FOLDER=noon_category_raw_feb_2_7
+CATEGORY_DEDUP_FOLDER=noon_category_dedup_feb_2_7
+
+# Product details files (enriched with variants/offers)
+PRODUCT_RAW_FOLDER=noon_product_raw_feb_2_7
+PRODUCT_DEDUP_FOLDER=noon_product_dedup_feb_2_7
+
+# Input CSV file
+INPUT_CSV=/media/mohamed/5C1C30381C300F8E/scrapping_noon_project/config/categories_to_scrape_second_feb_2_7.csv
+
+# Log file for profiling
+LOG_FILE=scraper_profiling_2_7.log
