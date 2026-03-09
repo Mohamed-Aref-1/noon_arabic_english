@@ -6,6 +6,7 @@ Contains utility functions, profiling tools, and logging setup.
 
 import os
 import csv
+import json
 import time
 import logging
 import functools
@@ -205,7 +206,7 @@ def extract_filename_from_url(url: str) -> str:
     # Generate timestamp with date and time (hours, minutes, seconds)
     timestamp = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
 
-    filename = 'noon_' + '_'.join(cleaned_parts) + f'_({timestamp}).csv'
+    filename = 'noon_' + '_'.join(cleaned_parts) + f'_({timestamp}).jsonl'
     return filename
 
 
@@ -300,3 +301,30 @@ def image_key_to_url(image_key: str) -> str:
     if not image_key:
         return ''
     return f"https://f.nooncdn.com/p/{image_key}.jpg"
+
+
+def read_jsonl(file_path: str) -> pd.DataFrame:
+    """Read a JSONL file into a DataFrame. Skips malformed lines."""
+    records = []
+    skipped = 0
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                skipped += 1
+    if skipped:
+        logging.getLogger('utils').warning(
+            f"Skipped {skipped} malformed lines in {os.path.basename(file_path)}"
+        )
+    return pd.DataFrame(records) if records else pd.DataFrame()
+
+
+def append_jsonl(records: list, file_path: str, mode: str = 'a'):
+    """Write a list of dicts to a JSONL file. Use mode='w' to overwrite."""
+    with open(file_path, mode, encoding='utf-8') as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')

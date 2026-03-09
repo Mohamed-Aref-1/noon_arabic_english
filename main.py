@@ -28,6 +28,9 @@ from datetime import datetime
 from scrapers import NoonScraperManager
 from utils import logger
 from post_processor import run_post_processor, finalize_combined_gift_data
+from s3_uploader import upload_to_s3
+from email_notifier import send_summary_email
+from config import Config
 
 
 def print_banner():
@@ -74,6 +77,7 @@ def main():
     logger.info("Loading configuration from .env...")
 
     scraping_success = False
+    manager = None
 
     try:
         # Initialize and run scraper
@@ -99,6 +103,8 @@ def main():
         logger.info(f"\nScraping phase ended at: {scrape_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info(f"Scraping duration: {scrape_duration}")
 
+    s3_upload_success = False
+
     # Run post-processor to combine and transform data
     if scraping_success:
         logger.info("\n" + "=" * 70)
@@ -107,8 +113,6 @@ def main():
 
         try:
             post_start = datetime.now()
-            # combined_gift_data.csv was built incrementally during scraping.
-            # Just run a final dedup pass to clean up any overlaps.
             finalize_combined_gift_data()
             post_end = datetime.now()
             logger.info(f"Post-processing completed in: {post_end - post_start}")
@@ -117,6 +121,34 @@ def main():
             logger.error(f"Post-processing error: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+        # Upload final output to S3
+        try:
+            output_file = f"{Config.PRODUCT_DEDUP_FOLDER}/{Config.OUTPUT_FILENAME}.jsonl"
+            logger.info(f"\n{'=' * 70}")
+            logger.info("STARTING S3 UPLOAD PHASE")
+            logger.info(f"{'=' * 70}")
+            s3_upload_success = upload_to_s3(output_file)
+        except Exception as e:
+            logger.error(f"S3 upload error: {e}")
+
+    # Send summary email
+    if scraping_success and manager is not None:
+        try:
+            end_time_for_email = datetime.now()
+            total_duration_for_email = end_time_for_email - start_time
+            logger.info(f"\n{'=' * 70}")
+            logger.info("SENDING SUMMARY EMAIL")
+            logger.info(f"{'=' * 70}")
+            send_summary_email(
+                scrape_results=manager.scrape_results,
+                products_processed=manager.products_processed,
+                total_records_scrapped=manager.total_records_scrapped,
+                s3_upload_success=s3_upload_success,
+                duration_str=str(total_duration_for_email),
+            )
+        except Exception as e:
+            logger.error(f"Email notification error: {e}")
 
     # Final summary
     end_time = datetime.now()

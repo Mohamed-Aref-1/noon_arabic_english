@@ -19,7 +19,9 @@ from .helpers import (
     calculate_data_schema,
     get_priority_columns,
     reorder_dataframe_columns,
-    image_key_to_url
+    image_key_to_url,
+    read_jsonl,
+    append_jsonl,
 )
 
 __all__ = [
@@ -37,5 +39,7 @@ __all__ = [
     'calculate_data_schema',
     'get_priority_columns',
     'reorder_dataframe_columns',
-    'image_key_to_url'
+    'image_key_to_url',
+    'read_jsonl',
+    'append_jsonl',
 ]

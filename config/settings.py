@@ -55,6 +55,25 @@ class Config:
     INPUT_CSV: str = os.getenv('INPUT_CSV', 'categories_to_scrape.csv')
     LOG_FILE: str = os.getenv('LOG_FILE', 'scraper_profiling.log')
 
+    # Final output filename (without extension) — change in .env to version your outputs
+    # e.g. OUTPUT_FILENAME=combined_gift_data1  →  combined_gift_data1.jsonl
+    OUTPUT_FILENAME: str = os.getenv('OUTPUT_FILENAME', 'combined_gift_data')
+
+    # S3 Upload settings (optional — leave blank to skip upload)
+    AWS_CREDENTIALS_CSV: str = os.getenv('AWS_CREDENTIALS_CSV', '')  # path to accessKeys CSV
+    AWS_ACCESS_KEY_ID: str = os.getenv('AWS_ACCESS_KEY_ID', '')
+    AWS_SECRET_ACCESS_KEY: str = os.getenv('AWS_SECRET_ACCESS_KEY', '')
+    S3_BUCKET_NAME: str = os.getenv('S3_BUCKET_NAME', 'hadiya-noon-data')
+    S3_FOLDER: str = os.getenv('S3_FOLDER', '')
+    S3_REGION: str = os.getenv('S3_REGION', 'us-east-1')
+    # Upload to S3 every N records written to the combined output file (0 = end of run only)
+    S3_UPLOAD_EVERY: int = int(os.getenv('S3_UPLOAD_EVERY', '0'))
+
+    # Email notification settings (Gmail SMTP)
+    NOTIFY_EMAIL_SENDER: str = os.getenv('NOTIFY_EMAIL_SENDER', '')
+    NOTIFY_EMAIL_PASSWORD: str = os.getenv('NOTIFY_EMAIL_PASSWORD', '')   # Gmail App Password
+    NOTIFY_EMAIL_RECIPIENT: str = os.getenv('NOTIFY_EMAIL_RECIPIENT', '')
+
     # API Base URLs
     BASE_API_URL: str = "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/"
     BASE_SITE_URL: str = "https://www.noon.com/uae-en/"

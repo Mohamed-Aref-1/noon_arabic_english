@@ -24,7 +24,9 @@ from utils import (
     ensure_directories,
     read_categories_from_csv,
     calculate_data_schema,
-    extract_filename_from_url
+    extract_filename_from_url,
+    read_jsonl,
+    append_jsonl,
 )
 
 
@@ -146,11 +148,14 @@ class NoonScraperManager:
         # Shutdown coordination
         self.shutdown_event = threading.Event()
 
-        # Incremental combined_gift_data.csv tracking
-        self._combined_output_file = os.path.join(Config.PRODUCT_DEDUP_FOLDER, 'combined_gift_data.csv')
+        # Incremental output file tracking (filename controlled by OUTPUT_FILENAME in .env)
+        self._combined_output_file = os.path.join(
+            Config.PRODUCT_DEDUP_FOLDER, f'{Config.OUTPUT_FILENAME}.jsonl'
+        )
         self._combined_skus_written: set = set()
         self._combined_header_written: bool = False
         self._combined_write_lock = threading.Lock()
+        self._records_since_last_upload: int = 0
 
         ensure_directories()
         self._initialize_audit_tables()
@@ -208,10 +213,15 @@ class NoonScraperManager:
     def _get_product_details_filename(self, category_filename: str) -> str:
         """Generate product details filename from category filename."""
         if category_filename.startswith('dedup_'):
-            return 'details_' + category_filename[6:]  # Remove 'dedup_' prefix
-        if category_filename.startswith('noon_'):
-            return 'details_' + category_filename
-        return 'details_' + category_filename
+            name = 'details_' + category_filename[6:]  # Remove 'dedup_' prefix
+        elif category_filename.startswith('noon_'):
+            name = 'details_' + category_filename
+        else:
+            name = 'details_' + category_filename
+        # Always store product details as JSONL regardless of source extension
+        if name.endswith('.csv'):
+            name = name[:-4] + '.jsonl'
+        return name
 
     # =========================================================================
     # CATEGORY SCRAPER - Deduplicates every 1000 records
@@ -316,23 +326,10 @@ class NoonScraperManager:
         new_skus = set(df_new['sku'].tolist())
         self.dedup_skus_written[self.current_dedup_file].update(new_skus)
 
-        # Sanitize data before writing
-        df_new = self._sanitize_for_csv(df_new.copy())
-
         # Use lock to prevent read/write race conditions
         with self.dedup_file_lock:
-            # Append to dedup file with QUOTE_ALL to handle commas in fields
-            write_header = not self.dedup_header_written.get(self.current_dedup_file, False)
-            mode = 'w' if write_header else 'a'
-
-            df_new.to_csv(
-                self.current_dedup_file,
-                mode=mode,
-                header=write_header,
-                index=False,
-                encoding='utf-8',
-                quoting=1  # csv.QUOTE_ALL - quote all fields to prevent comma issues
-            )
+            file_mode = 'w' if not self.dedup_header_written.get(self.current_dedup_file, False) else 'a'
+            append_jsonl(df_new.to_dict('records'), self.current_dedup_file, mode=file_mode)
             self.dedup_header_written[self.current_dedup_file] = True
 
         category_logger.info(
@@ -358,9 +355,18 @@ class NoonScraperManager:
             return set()
 
         try:
-            # Use on_bad_lines='skip' to handle any corrupted lines
-            df = pd.read_csv(details_path, usecols=['sku'], on_bad_lines='skip', encoding='utf-8')
-            return set(df['sku'].dropna().unique())
+            skus = set()
+            with open(details_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            sku = json.loads(line).get('sku')
+                            if sku:
+                                skus.add(sku)
+                        except json.JSONDecodeError:
+                            pass
+            return skus
         except Exception as e:
             product_details_logger.error(f"Error reading processed SKUs: {e}")
             return set()
@@ -374,7 +380,7 @@ class NoonScraperManager:
             # Wait a bit for some dedup data to be written
             time.sleep(5)
 
-            category_name = os.path.basename(dedup_file).replace('.csv', '')
+            category_name = os.path.basename(dedup_file).replace('.jsonl', '')
             product_details_logger.info(f"\n{'='*60}")
             product_details_logger.info(f"[Category {category_index}/{total_categories}] PRODUCT READER STARTED")
             product_details_logger.info(f"Reading from: {dedup_file}")
@@ -396,7 +402,7 @@ class NoonScraperManager:
 
                 try:
                     # Read the entire file (it's being appended to)
-                    df = pd.read_csv(dedup_file, on_bad_lines='skip', encoding='utf-8')
+                    df = read_jsonl(dedup_file)
                     total_rows = len(df)
 
                     if total_rows <= last_read_position:
@@ -562,32 +568,22 @@ class NoonScraperManager:
         product_details_logger.info(f"Processor thread completed - flushed {total_flushed} remaining records")
 
     def _write_product_batch(self, batch, file_path, write_header):
-        """Write a batch of products to file and append to combined_gift_data.csv."""
+        """Write a batch of products to JSONL file and append to combined_gift_data.jsonl."""
         if not batch or not file_path:
             return
 
-        df = pd.DataFrame(batch)
-        # Sanitize data before writing to prevent CSV parsing issues
-        df = self._sanitize_for_csv(df)
-
         mode = 'w' if write_header else 'a'
-        # Use QUOTE_ALL to prevent comma issues in fields
-        df.to_csv(
-            file_path,
-            mode=mode,
-            header=write_header,
-            index=False,
-            encoding='utf-8',
-            quoting=1  # csv.QUOTE_ALL
-        )
+        with open(file_path, mode, encoding='utf-8') as f:
+            for record in batch:
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
-        # Incrementally append transformed records to combined_gift_data.csv
-        self._append_to_combined_gift_data(df)
+        # Incrementally append transformed records to combined_gift_data.jsonl
+        self._append_to_combined_gift_data(pd.DataFrame(batch))
 
     def _append_to_combined_gift_data(self, df: pd.DataFrame):
         """
         Apply post-processor transformation to a batch and append new records
-        to combined_gift_data.csv. Skips SKUs already written (cross-batch dedup).
+        to combined_gift_data.jsonl. Skips SKUs already written (cross-batch dedup).
         """
         from post_processor import COLUMNS_TO_KEEP, IMAGE_COLUMNS, combine_images, split_breadcrumbs
         import json as _json
@@ -633,33 +629,36 @@ class NoonScraperManager:
                     for col in ['category_1', 'category_2', 'category_3', 'category_4']:
                         df_out[col] = None
 
-                df_out = self._sanitize_for_csv(df_out)
-
-                write_header = not self._combined_header_written
-                mode = 'w' if write_header else 'a'
-
+                mode = 'w' if not self._combined_header_written else 'a'
                 os.makedirs(os.path.dirname(self._combined_output_file), exist_ok=True)
-                df_out.to_csv(
-                    self._combined_output_file,
-                    mode=mode,
-                    header=write_header,
-                    index=False,
-                    encoding='utf-8',
-                    quoting=1,
-                )
+                with open(self._combined_output_file, mode, encoding='utf-8') as f:
+                    for record in df_out.to_dict('records'):
+                        f.write(json.dumps(record, ensure_ascii=False) + '\n')
                 self._combined_header_written = True
 
                 # Track written SKUs
                 if dedup_col and dedup_col in df.columns:
                     self._combined_skus_written.update(df[dedup_col].astype(str).tolist())
 
+                self._records_since_last_upload += len(df_out)
+
                 product_details_logger.info(
-                    f"combined_gift_data.csv +{len(df_out)} records "
+                    f"combined_gift_data.jsonl +{len(df_out)} records "
                     f"(total unique: {len(self._combined_skus_written)})"
                 )
 
+                # Incremental S3 upload every N records if configured
+                upload_every = Config.S3_UPLOAD_EVERY
+                if upload_every > 0 and self._records_since_last_upload >= upload_every:
+                    from s3_uploader import upload_to_s3
+                    product_details_logger.info(
+                        f"S3 incremental upload triggered ({self._records_since_last_upload} new records)"
+                    )
+                    upload_to_s3(self._combined_output_file)
+                    self._records_since_last_upload = 0
+
         except Exception as e:
-            product_details_logger.error(f"Error appending to combined_gift_data.csv: {e}")
+            product_details_logger.error(f"Error appending to combined_gift_data.jsonl: {e}")
 
     def _start_product_scraper(self, dedup_file: str, category_index: int, total_categories: int):
         """Start the product scraper threads for a category."""
@@ -757,57 +756,16 @@ class NoonScraperManager:
         product_details_logger.info("="*60)
 
     def _safe_read_dedup_csv(self, file_path: str, max_retries: int = 3) -> Optional[pd.DataFrame]:
-        """
-        Safely read a dedup CSV file with retry logic and error handling.
-        Handles race conditions where file is being written while reading.
-        """
+        """Safely read a dedup JSONL file with retry logic."""
         for attempt in range(max_retries):
             try:
-                # Acquire lock to prevent reading while writing
                 with self.dedup_file_lock:
-                    # First, count lines in file to detect if lines are being skipped
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        total_lines = sum(1 for _ in f) - 1  # -1 for header
-
-                    # Read with on_bad_lines='warn' to log issues but still read
-                    df = pd.read_csv(
-                        file_path,
-                        on_bad_lines='warn',  # Warn about bad lines
-                        encoding='utf-8'
-                    )
-
-                    # Check if lines were skipped
-                    if len(df) < total_lines:
-                        skipped = total_lines - len(df)
-                        product_details_logger.warning(
-                            f"WARNING: {skipped} lines skipped in {os.path.basename(file_path)} "
-                            f"(read {len(df)}/{total_lines} lines) - data may be corrupted!"
-                        )
-
-                    return df
-            except pd.errors.EmptyDataError:
-                product_details_logger.warning(f"Empty file {file_path}, attempt {attempt + 1}/{max_retries}")
-                time.sleep(1)
-            except pd.errors.ParserError as e:
-                # If parsing fails completely, try with on_bad_lines='skip'
-                product_details_logger.warning(
-                    f"Parser error reading {os.path.basename(file_path)}, retrying with skip mode: {e}"
-                )
-                try:
-                    with self.dedup_file_lock:
-                        df = pd.read_csv(file_path, on_bad_lines='skip', encoding='utf-8')
-                        product_details_logger.warning(
-                            f"Read {len(df)} rows from {os.path.basename(file_path)} with skip mode"
-                        )
-                        return df
-                except Exception as e2:
-                    product_details_logger.error(f"Failed even with skip mode: {e2}")
-                time.sleep(1)
+                    return read_jsonl(file_path)
             except Exception as e:
                 product_details_logger.warning(
                     f"Error reading {os.path.basename(file_path)} (attempt {attempt + 1}/{max_retries}): {e}"
                 )
-                time.sleep(1)  # Wait before retry
+                time.sleep(1)
 
         product_details_logger.error(f"Failed to read {file_path} after {max_retries} attempts")
         return None
@@ -851,7 +809,7 @@ class NoonScraperManager:
                 all_dedup_files = [
                     os.path.join(Config.CATEGORY_DEDUP_FOLDER, f)
                     for f in os.listdir(Config.CATEGORY_DEDUP_FOLDER)
-                    if f.startswith('dedup_') and f.endswith('.csv')
+                    if f.startswith('dedup_') and f.endswith('.jsonl')
                 ]
             except Exception as e:
                 product_details_logger.error(f"Error listing dedup folder: {e}")
@@ -903,7 +861,7 @@ class NoonScraperManager:
                                 if r.get('sku') and r.get('sku') not in queued_skus_by_file[dedup_file]]
 
                     if unqueued:
-                        category_name = os.path.basename(dedup_file).replace('.csv', '').replace('dedup_', '')
+                        category_name = os.path.basename(dedup_file).replace('.jsonl', '').replace('dedup_', '')
 
                         product_details_logger.info(
                             f"Monitor found {len(unqueued)} new products in {os.path.basename(dedup_file)} "
@@ -1190,41 +1148,14 @@ class NoonScraperManager:
 
         # Read the completed dedup file (no race condition - file is done)
         try:
-            # First try with strict parsing
-            df = pd.read_csv(dedup_file, on_bad_lines='skip', encoding='utf-8')
+            df = read_jsonl(dedup_file)
             total_in_file = len(df)
             product_details_logger.info(
                 f"[Category {category_index}/{total_categories}] "
                 f"Total products in dedup file: {total_in_file}"
             )
-
-            # If we suspect data loss, try to read with more lenient settings
-            if total_in_file == 0:
-                product_details_logger.warning(
-                    f"[Category {category_index}/{total_categories}] "
-                    f"Zero products read, trying alternative parsing method"
-                )
-                df = pd.read_csv(dedup_file, on_bad_lines='skip', encoding='utf-8',
-                                engine='python', low_memory=False)
-                total_in_file = len(df)
-                product_details_logger.info(
-                    f"[Category {category_index}/{total_categories}] "
-                    f"After alternative parsing: {total_in_file} products"
-                )
         except Exception as e:
             product_details_logger.error(f"Error reading dedup file: {e}")
-            # Try to read with most lenient settings
-            try:
-                df = pd.read_csv(dedup_file, on_bad_lines='skip', encoding='utf-8',
-                                engine='python', low_memory=False, sep=',')
-                total_in_file = len(df)
-                product_details_logger.info(
-                    f"[Category {category_index}/{total_categories}] "
-                    f"Recovered {total_in_file} products with lenient parsing"
-                )
-            except Exception as e2:
-                product_details_logger.error(f"Could not read dedup file even with lenient parsing: {e2}")
-                df = pd.DataFrame()  # Empty dataframe as fallback
             return 0
 
         # Filter to unprocessed products with valid SKUs
@@ -1248,7 +1179,7 @@ class NoonScraperManager:
         details_filename = self._get_product_details_filename(os.path.basename(dedup_file))
         output_file = os.path.join(Config.PRODUCT_RAW_FOLDER, details_filename)
         self.current_product_details_file = output_file
-        category_name = os.path.basename(dedup_file).replace('.csv', '').replace('dedup_', '')
+        category_name = os.path.basename(dedup_file).replace('.jsonl', '').replace('dedup_', '')
 
         # Queue all unprocessed products
         products = df_unprocessed.to_dict('records')
@@ -1386,7 +1317,7 @@ class NoonScraperManager:
             return
 
         dedup_files = [f for f in os.listdir(dedup_folder)
-                       if f.endswith('.csv') and f != 'audit_table.csv']
+                       if f.endswith('.jsonl')]
 
         if not dedup_files:
             product_details_logger.info("No dedup files found to process.")
@@ -1426,7 +1357,7 @@ class NoonScraperManager:
 
             # Read and process in chunks
             try:
-                df = pd.read_csv(dedup_path, on_bad_lines='skip', encoding='utf-8')
+                df = read_jsonl(dedup_path)
                 total_products = len(df)
                 product_details_logger.info(f"[Category {i}/{len(dedup_files)}] Total products in file: {total_products}")
 
@@ -1513,8 +1444,10 @@ class NoonScraperManager:
         """Append entry to audit table."""
         audit_path = os.path.join(folder, 'audit_table.csv')
         try:
-            # Use on_bad_lines='skip' to handle any corrupted lines
-            df = pd.read_csv(file_path, on_bad_lines='skip', encoding='utf-8')
+            if file_path.endswith('.jsonl'):
+                df = read_jsonl(file_path)
+            else:
+                df = pd.read_csv(file_path, on_bad_lines='skip', encoding='utf-8')
             new_row = pd.DataFrame([{
                 'filename': filename,
                 'source_url': source_url,
@@ -1534,7 +1467,7 @@ class NoonScraperManager:
             product_raw_dir = Config.PRODUCT_RAW_FOLDER
             if os.path.exists(product_raw_dir):
                 for filename in os.listdir(product_raw_dir):
-                    if filename.startswith('details_') and filename.endswith('.csv') and filename != 'audit_table.csv':
+                    if filename.startswith('details_') and filename.endswith('.jsonl'):
                         filepath = os.path.join(product_raw_dir, filename)
                         if os.path.isfile(filepath):
                             # Create a dummy result for the audit update

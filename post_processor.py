@@ -100,12 +100,20 @@ def combine_images(row, image_cols: List[str]) -> Optional[str]:
     return json.dumps(images) if images else None
 
 
-def process_csv(filepath: str, image_cols: List[str]) -> pd.DataFrame:
-    """Process a single CSV file."""
+def process_jsonl(filepath: str, image_cols: List[str]) -> pd.DataFrame:
+    """Process a single JSONL file."""
     print(f"  Processing: {os.path.basename(filepath)}")
 
-    # Handle malformed CSVs with on_bad_lines='skip'
-    df = pd.read_csv(filepath, on_bad_lines='skip', encoding='utf-8')
+    records = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    df = pd.DataFrame(records)
     print(f"    Rows: {len(df):,}")
 
     # Keep only columns that exist
@@ -142,17 +150,26 @@ def finalize_combined_gift_data(output_file: str = None) -> Optional[pd.DataFram
     Much faster than re-processing all raw files — just deduplicates what's already there.
     """
     if output_file is None:
-        output_file = os.path.join(Config.PRODUCT_DEDUP_FOLDER, 'combined_gift_data.csv')
+        output_file = os.path.join(Config.PRODUCT_DEDUP_FOLDER, f'{Config.OUTPUT_FILENAME}.jsonl')
 
     if not os.path.exists(output_file):
-        print(f"combined_gift_data.csv not found at {output_file} — nothing to finalize")
+        print(f"{os.path.basename(output_file)} not found at {output_file} — nothing to finalize")
         return None
 
     print("=" * 60)
-    print("Finalizing combined_gift_data.csv (dedup pass)")
+    print("Finalizing combined_gift_data.jsonl (dedup pass)")
     print("=" * 60)
 
-    df = pd.read_csv(output_file, on_bad_lines='skip', encoding='utf-8')
+    records = []
+    with open(output_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    df = pd.DataFrame(records)
     print(f"Rows before final dedup: {len(df):,}")
 
     dedup_col = 'detail_variant_sku' if 'detail_variant_sku' in df.columns else 'sku'
@@ -166,7 +183,9 @@ def finalize_combined_gift_data(output_file: str = None) -> Optional[pd.DataFram
         df = df.drop(columns=empty_cols)
         print(f"Removed {len(empty_cols)} empty columns")
 
-    df.to_csv(output_file, index=False, encoding='utf-8')
+    with open(output_file, 'w', encoding='utf-8') as f:
+        for record in df.to_dict('records'):
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
     print(f"Final rows: {len(df):,} | Saved to {output_file}")
     print("=" * 60)
     return df
@@ -188,10 +207,10 @@ def run_post_processor(input_dir: str = None, output_file: str = None) -> Option
         input_dir = Config.PRODUCT_RAW_FOLDER
 
     if output_file is None:
-        output_file = os.path.join(Config.PRODUCT_DEDUP_FOLDER, 'combined_gift_data.csv')
+        output_file = os.path.join(Config.PRODUCT_DEDUP_FOLDER, f'{Config.OUTPUT_FILENAME}.jsonl')
 
     print("=" * 60)
-    print("Noon Post Processor - CSV Combiner & Transformer")
+    print("Noon Post Processor - JSONL Combiner & Transformer")
     print("=" * 60)
     print(f"\nInput directory:  {input_dir}")
     print(f"Output file:      {output_file}")
@@ -201,30 +220,32 @@ def run_post_processor(input_dir: str = None, output_file: str = None) -> Option
         print(f"\nERROR: Input directory not found: {input_dir}")
         return None
 
-    csv_files = sorted([
+    jsonl_files = sorted([
         Path(input_dir) / f for f in os.listdir(input_dir)
-        if f.endswith('.csv') and f != 'audit_table.csv' and not f.startswith('progress')
+        if f.endswith('.jsonl')
     ])
 
-    if not csv_files:
-        print(f"\nNo CSV files found in {input_dir}")
+    if not jsonl_files:
+        print(f"\nNo JSONL files found in {input_dir}")
         return None
 
-    print(f"\nFound {len(csv_files)} CSV file(s):")
-    for f in csv_files:
+    print(f"\nFound {len(jsonl_files)} JSONL file(s):")
+    for f in jsonl_files:
         print(f"  - {f.name}")
 
     # Detect image columns from first file
-    first_df = pd.read_csv(csv_files[0], nrows=1, on_bad_lines='skip', encoding='utf-8')
-    image_cols = [c for c in IMAGE_COLUMNS if c in first_df.columns]
+    with open(jsonl_files[0], 'r', encoding='utf-8') as fh:
+        first_line = fh.readline().strip()
+    first_record = json.loads(first_line) if first_line else {}
+    image_cols = [c for c in IMAGE_COLUMNS if c in first_record]
     print(f"\nDetected {len(image_cols)} image columns")
 
     # Process all files
     print("\nProcessing files...")
     all_dfs = []
-    for f in csv_files:
+    for f in jsonl_files:
         try:
-            df = process_csv(str(f), image_cols)
+            df = process_jsonl(str(f), image_cols)
             all_dfs.append(df)
         except Exception as e:
             print(f"  ERROR processing {f.name}: {e}")
@@ -257,8 +278,10 @@ def run_post_processor(input_dir: str = None, output_file: str = None) -> Option
     # Ensure output directory exists
     os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
 
-    # Save to CSV
-    combined.to_csv(output_file, index=False, encoding='utf-8')
+    # Save to JSONL
+    with open(output_file, 'w', encoding='utf-8') as f:
+        for record in combined.to_dict('records'):
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     print("\n" + "=" * 60)
     print(f"COMPLETE!")

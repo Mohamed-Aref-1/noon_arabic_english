@@ -7,7 +7,6 @@ Scrapes products from category listing API.
 import os
 import time
 import random
-import pandas as pd
 from typing import Dict, List, Optional, Tuple, Callable
 from curl_cffi import requests
 
@@ -19,8 +18,8 @@ from utils import (
     extract_filename_from_url,
     extract_category_path_from_url,
     extract_country_prefix_from_url,
-    reorder_dataframe_columns,
-    image_key_to_url
+    image_key_to_url,
+    append_jsonl,
 )
 
 
@@ -464,51 +463,12 @@ class CategoryListScraper:
             'failed_pages': failed_pages
         }
 
-    def _sanitize_for_csv(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Sanitize DataFrame values for CSV writing.
-        Removes/replaces characters that can break CSV parsing.
-        """
-        for col in df.columns:
-            if df[col].dtype == 'object':  # String columns
-                df[col] = df[col].apply(lambda x: self._sanitize_value(x) if isinstance(x, str) else x)
-        return df
-
-    def _sanitize_value(self, value: str) -> str:
-        """Sanitize a single string value for CSV."""
-        if not value:
-            return value
-        # Replace newlines and carriage returns with spaces
-        value = value.replace('\n', ' ').replace('\r', ' ')
-        # Replace tabs with spaces
-        value = value.replace('\t', ' ')
-        # Remove null bytes
-        value = value.replace('\x00', '')
-        # Normalize multiple spaces to single space
-        while '  ' in value:
-            value = value.replace('  ', ' ')
-        return value.strip()
-
     def _write_batch(self, products: List[Dict], output_path: str, write_header: bool):
-        """Write a batch of products to CSV file."""
+        """Write a batch of products to JSONL file."""
         if not products:
             return
 
-        df = pd.DataFrame(products)
-        df = reorder_dataframe_columns(df)
-
-        # Sanitize all string values to prevent CSV parsing issues
-        df = self._sanitize_for_csv(df)
-
         mode = 'w' if write_header else 'a'
-        # Use QUOTE_ALL (quoting=1) to properly escape commas in fields
-        df.to_csv(
-            output_path,
-            mode=mode,
-            header=write_header,
-            index=False,
-            encoding='utf-8',
-            quoting=1  # csv.QUOTE_ALL - prevents field count mismatch due to unescaped commas
-        )
+        append_jsonl(products, output_path, mode=mode)
 
-        logger.debug(f"Wrote {len(products)} products to {output_path} (header={write_header})")
+        logger.debug(f"Wrote {len(products)} products to {output_path}")
