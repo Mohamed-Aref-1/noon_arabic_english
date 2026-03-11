@@ -8,6 +8,7 @@ import os
 import time
 import random
 from typing import Dict, List, Optional, Tuple, Callable
+from urllib.parse import urlparse, parse_qsl
 from curl_cffi import requests
 
 from config import Config
@@ -37,6 +38,8 @@ class CategoryListScraper:
         # Set per scrape_category call based on detected country
         self._country_cfg = Config.get_country_config('uae-en')
         self._country_prefix = 'uae-en'
+        # Extra query params (e.g. q=iphone from search URLs), set per scrape_category call
+        self._base_params: Dict[str, str] = {}
 
         logger.info("CategoryListScraper initialized")
         logger.debug(f"Using VISITOR_ID: {self.visitor_id}")
@@ -249,7 +252,7 @@ class CategoryListScraper:
             with profile_step(f"HTTP request: page {page}"):
                 response = self.session.get(
                     f"{self.base_url}{category_path}",
-                    params={'page': str(page)},
+                    params={**self._base_params, 'page': str(page)},
                     headers=headers,
                     impersonate=Config.CHROME_IMPERSONATE,
                     timeout=Config.REQUEST_TIMEOUT
@@ -319,6 +322,8 @@ class CategoryListScraper:
         self._country_cfg = Config.get_country_config(self._country_prefix)
 
         category_path = extract_category_path_from_url(category_url)
+        # Preserve any query params (e.g. ?q=iphone) from search URLs
+        self._base_params = dict(parse_qsl(urlparse(category_url).query))
         filename = extract_filename_from_url(category_url)
         output_path = output_path_override or os.path.join(output_folder, filename)
 
