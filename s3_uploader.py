@@ -7,6 +7,7 @@ or from a credentials CSV (AWS_CREDENTIALS_CSV path in .env).
 """
 
 import os
+from datetime import datetime
 import pandas as pd
 import boto3
 from botocore.exceptions import ClientError
@@ -39,6 +40,9 @@ def upload_to_s3(file_path: str, object_name: str = None) -> bool:
 
     if object_name is None:
         filename = os.path.basename(file_path)
+        name, ext = os.path.splitext(filename)
+        ts = datetime.now().strftime("%Y_%m_%d_%H_%-M_%S")
+        filename = f"{name}_({ts}){ext}"
         object_name = f"{Config.S3_FOLDER}/{filename}" if Config.S3_FOLDER else filename
 
     s3 = boto3.client(
